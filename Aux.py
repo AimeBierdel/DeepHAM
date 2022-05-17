@@ -1,3 +1,4 @@
+from re import S
 import torch
 from torch.utils.data import  DataLoader, RandomSampler
 
@@ -37,17 +38,28 @@ def SimulatePolicy(policy,value,T,Economy,macroEngine):
     sample = Economy
     nAgents = Economy.size(0)
     PathUtility = torch.zeros(1)
+    # We simulate forward for T periods
     for t in range(0,T):
-        # compute policy taking only the gradient with respect to the consumption of the first agent
-        pol = policy.forwardIndex(sample,0)
-        #compute next period state
+        # compute policy for the entire economy without updating the gradient
+        with torch.no_grad():
+            pol_no_grad = policy(sample)
+        # Now re-compute the policy of agent 0 by enabling gradient
+        pol_with_grad = policy(sample)
+        # And update the policy vector so that only the first element has a gradient, corresponding to a "play"
+        pol = torch.zeros(pol_with_grad.size())
+        pol[0] = pol_with_grad[0]
+        pol[1:] = pol_no_grad[1:]
+     
+
+        #compute next period state and consumption this period
         sample , c= macroEngine.stateForward( sample, pol )
+        # Add utility from consumption to the Path Utility
         PathUtility = PathUtility +  torch.pow(macroEngine.params[4],t)*macroEngine.U(c[0]+ torch.tensor([1e-8]))
         
     #add value of terminal state after  T
-    value.val.eval()
-    PathUtility = PathUtility + torch.squeeze(value(sample))[0]
-    value.val.train()
+    value.eval()
+    PathUtility = PathUtility + torch.pow(macroEngine.params[4],T) * torch.squeeze(value(sample))[0]
+    value.train()
     return PathUtility
         
 

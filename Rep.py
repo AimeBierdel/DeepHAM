@@ -1,7 +1,7 @@
 
 import torch 
 import torch.nn as nn 
-from matplotlib.pyplot import plot, show 
+from matplotlib.pyplot import plot, show, title
 import numpy as np
 import Aux 
 import Objects
@@ -13,6 +13,11 @@ from gc import get_objects, set_debug
 
 
 torch.autograd.set_detect_anomaly(True)
+
+
+#########################################
+##### Macro Model Parameters ############
+#########################################
 
 Zstates = torch.tensor([0.99,1.01])
 
@@ -29,7 +34,13 @@ modelparams = torch.tensor([alpha,delta,lbar,b,beta,Zstates[0],Zstates[1] ])
 Pi = torch.tensor([ [0.525 , 0.35 , 0.03125,0.09375 ],[ 0.038889 , 0.836111 , 0.002083,0.122917],[0.09375,0.03125,0.291667,0.583333],[0.009115,0.115885,0.024306,0.850694] ])
 
 
+nIndStates = 1 # individual states : assets and idiosyncratic shock
+nstates = 4  # individual capital, individual z, macro Z, generalized moment 
 
+
+####################################
+### DeepHAM procedure parameters ###
+####################################
 ###### Number of iterations / agents 
 
 # parameters for the simulation of the stationary distribution
@@ -40,11 +51,14 @@ nEconomies =50
 Nk = 30 #Nb of loops for the whole procedure 
 Tsimul = 100 # Number of periods for simulation of stationary distribution
 Tvalue = 20 # Number of periods for simulation of expectations
-Tpol = 1 # Number of plays before value for policy function optimization
-Nv = 100 #Number of optimization loops for value f
-Np = 100 # Number of optimization loops for policy 
-Nb =10 #number of batches 
-###### Neural networks parameters 
+Tpol = 5 # Number of plays before value for policy function optimization
+Nv = 100 #Number of optimization loops for value fct is Nv/Nb
+Np = 100 # Number of optimization loops for policy is Np/Nb
+Nb =10 #number of elements per batch
+
+#######################################
+###### Neural networks parameters #####
+#######################################
 
 NbLayersPol = 3 
 NbLayersVal = 3
@@ -52,16 +66,6 @@ NbLayersGM = 3
 hiddenSizePol= 10
 hiddenSizeVal = 10 
 hiddenSizeGM=10
-
-## Number of generalized moments for policy and value function 
-GMPolSize = 1
-GMValSize = 1
-batch_size = 10
-learning_rate = 0.1
-
-
-nIndStates = 1 # individual states : assets and idiosyncratic shock
-nstates = 4  # individual capital, individual z, macro Z, generalized moment 
 
 
 
@@ -76,45 +80,35 @@ macroEngine = KSmodel.KSmodel(modelparams,Pi,Zstates)
 #### Create and initialize neural networks : one for policy and one for value function, and one for generalized moment
 
 GMModel = Objects.GMomentNet(nIndStates,hiddenSizeGM,NbLayersGM, 1,lastActivFunc=None)
-PolModel = Objects.FittingNet(nstates,hiddenSizePol,NbLayersPol,1,"sigmoid")
+# I use softmax with two outputs because sigmoid behaves super badly, it returns a gradient of zero for anything
+# out of the -sqrt(3), sqrt(3) range so there is almost never learning. 
+# Instead I use the first output of a two outputs softmax (ain't dumb if it works ?)
+PolModel = Objects.FittingNet(nstates,hiddenSizePol,NbLayersPol,2,"softmax")
 ValModel = Objects.FittingNet(nstates,hiddenSizeVal,NbLayersVal,1,lastActivFunc=None)
 
 val = Objects.ValueModel(GMModel,ValModel,macroEngine)
 pol = Objects.PolicyModel(GMModel,PolModel,macroEngine)
 
-# Utility function compatible with autograd
-valOptimizer = torch.optim.SGD(val.parameters(), lr=learning_rate)
-polOptimizer = torch.optim.SGD(pol.parameters(), lr=learning_rate)
-
-
-## Define the optimizers 
-GMOptimizer = torch.optim.SGD(GMModel.parameters(), lr=learning_rate)
-ValueOptimizer = torch.optim.SGD(PolModel.parameters(), lr=learning_rate)
-PolOptimizer = torch.optim.SGD(ValModel.parameters(), lr=learning_rate)
 # define loss function 
 
 lossFct= nn.MSELoss()
 
-
-
-print(GMModel.parameters())
-
-
 ###################################
 #### Main loop for optimization ###
 ###################################
+
 for i in range(0,Nk):
+    # Define the optimizers with 
     #decaying learning rate
-    learning_rate = 0.1 * (Nk - 1 - i)/(Nk-1) +  1e-6 * i/(Nk-1)
+    learning_rate = 0.1 * ((Nk - 1 - i)/(Nk-1))**3+  1e-6 * (i/(Nk-1))**3
     valOptimizer = torch.optim.SGD(val.parameters(), lr=learning_rate)
     polOptimizer = torch.optim.SGD(pol.parameters(), lr=learning_rate)
   
     ## Main loop : number of epochs
     print('iteration '+ str( i ))
-    ## Prepare the stationnary distribution which is assumed to exist. We do this by iterating the optimization of houesholds according to our
+    ## Prepare the stationnary distribution which is assumed to exist. We do this by iterating the optimization of households according to our
     ## Policy functions for a number of periods. 
-
-    # put the stationary distribution into a dataloader to sample from it
+    ## Then put the stationary distribution into a dataloader to sample from it
     if i == 0 :
         DistDataset = Objects.StatDataset(Aux.MCstationaryDistribution(pol,Tsimul, nAgents,nEconomies,macroEngine).detach())
     else :
@@ -134,8 +128,8 @@ for i in range(0,Nk):
             Vi = Vi +  torch.div(Vsim , torch.tensor([Nb*1.]))
         LossHist = 1e8 
         count = 0
-        # We can parametrize the number of iterations and 
-        # interval for value prediction error of gradient computation here
+         # we can parametrize the number of optimization steps on each batch, either using a count or the percentage
+        # change of the loss function
         while (LossHist > 1e-4) and ( count < 10 ):
             Vpred = torch.zeros(data.size(1))
             # For each economy in a batch 
@@ -143,20 +137,19 @@ for i in range(0,Nk):
 
                 ### Compute Value from model and add it to compute the expected value predicted by the neural network
                 Vpred = Vpred + torch.div(torch.squeeze(val(data[k,:,:])), torch.tensor([Nb*1.]))
+            ### Compute the Loss
             Loss = lossFct(Vi, Vpred)
-            
-             ### Backpropagation to compute gradient      
+            ### Backpropagation to compute gradient      
             Loss.backward()
-            
+            ### Clip the gradient 
             torch.nn.utils.clip_grad_norm_(val.parameters(), 5.)
-        ### Update value function parameters 
+            ### Update value function parameters 
             valOptimizer.step()
-        ### Empty gradients 
+            ### Empty gradients 
             valOptimizer.zero_grad()
             polOptimizer.zero_grad()
             LossHist = Loss.item()
             del Vpred 
-            
             count = count + 1
         
            
@@ -176,15 +169,18 @@ for i in range(0,Nk):
         epochloss = 1e6
         prev = 1.
         count = 0
+        # we can parametrize the number of optimization steps on each batch, either using a count or the percentage
+        # change of the loss function
         while (abs((epochloss - prev)/prev) > 1e-8 )and ( count < 10 ):
-            value = torch.zeros(Nb)
+            loss = torch.zeros(1)
             for k in range(0,Nb):
+                x = torch.div(Aux.SimulatePolicy(pol,val,Tpol, data[k,:,:],macroEngine),torch.tensor([Nb*1.]))
                 ### Compute utility for all agents in the economy by simulating it forward
                 # and add the utility of the path to agent 1's value. All done within SimulatePolicy function from Aux
-                value[k] =  - torch.div(Aux.SimulatePolicy(pol,val,Tpol, data[k,:,:],macroEngine),torch.tensor([Nb*1.]))
+                loss =  loss - x
             
                 # Backward propagation
-            loss = value.sum()
+            
             loss.backward()
             prev = epochloss
             epochloss = loss.item()
@@ -203,21 +199,25 @@ for i in range(0,Nk):
             count = count+1
             
             del loss
-            del value 
         print(epochloss)
     
     gc.collect()
 
 
+### Some plots 
+
 with torch.no_grad():
         testTensor = torch.tensor([ i*1. for i in range(20,61) ]).view((41,1))
         result = GMModel(testTensor).detach()        
         plot(testTensor,result)
+        title('Generalized moment Q(a)')
         show()
 
-        x= torch.tensor([ [1.01, 1., 40. , i*1. ] for i in range(20,61)] )
-        result2 = PolModel(x)
-        plot(testTensor,result2)
+        x= torch.tensor([ [1.01, 1., 40. , 0. ] for i in range(20,61)] )
+        x[:,3] = torch.squeeze(result)
+        result2 = ValModel(x)
+        plot(result,result2)
+        title('Value function for Z=1 , z=1, a = 40 as fct of Q')
         show()
 
 

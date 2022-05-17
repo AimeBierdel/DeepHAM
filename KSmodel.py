@@ -57,15 +57,14 @@ class KSmodel:
         return [Pi0 , Pi1] , PiZ
     ### Function that computes the macroeconomic states K,L,r,w and tau from the state X and indices of individual assets and z. Specific to one model
     def MacroState(self,economy):
-        nAgents = economy.size(0)
+        nAgents = economy.size(0)*torch.tensor([1.])
         Z = economy[0,0]
         K = torch.max(torch.sum( economy,0)[2]/nAgents , torch.tensor([1e-8]))
-        L = (torch.sum(economy, 0)[1] + 0.00000001)*self.params[2]/nAgents
-        r = Z* self.params[0]* (K/L)**(self.params[0]-1)
-        w = Z * ( 1- self.params[0])*((K/L)**self.params[0])
+        # Making sure it's never 0 by adding 1e-8
+        L = (torch.sum(economy, 0)[1] + torch.tensor([1e-8]))*self.params[2]/nAgents
+        r = Z* self.params[0]* torch.pow((K/L),self.params[0]-1)
+        w = Z * ( 1- self.params[0])*torch.pow( K/L , self.params[0])
         tau = self.params[3]*(1-L)/(self.params[2] * L)
-
-        
         return K,L , r,w , tau
 
   
@@ -84,7 +83,7 @@ class KSmodel:
         #current macro state and number of agents
 
 
-         # draw this period's aggregate and individual states from marginals
+        # draw next period's aggregate and individual states from marginals
         PiVec , PiZ= self.getMarginals()
         
         Zdraw = torch.rand(1)
@@ -100,8 +99,9 @@ class KSmodel:
         K,L,r,w,tau = self.MacroState(economy)
         
        
-        # Compute next period's capital. We detach gradient from macro aggregates as they don't internalize the impact
-        budget = (1+r - self.params[1])*economy[:,2] + ((1 - tau)*self.params[2]*economy[:,1] + self.params[3]*(torch.ones(nAgents) - economy[:,1])     )*w
+        # Compute next period's capital. Whether we should detach gradient from macro aggregates as they don't internalize the impact is an 
+        # open question to me
+        budget = (1+r.detach() - self.params[1])*economy[:,2] + ((1 - tau.detach())*self.params[2]*economy[:,1] + self.params[3]*(torch.ones(nAgents) - economy[:,1])     )*w.detach()
        
         res[:,2] = budget*(torch.ones(nAgents)- torch.squeeze(pol))
         if withCons:

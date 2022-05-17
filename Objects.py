@@ -85,7 +85,7 @@ class FittingNet(nn.Module):
                 out = self.hiddenl(out)
                 out = self.relu(out)
         out = self.lastl(out)
-        out = torch.div(out, self.hiddensize)
+        out = torch.div(out, self.hiddensize) # Normalizing 
         if self.lastActivFunc == "sigmoid" :
             out = out.clamp(min = -torch.sqrt(torch.tensor([3])), max = torch.sqrt(torch.tensor([3])))
             out = self.sigmoid(out)
@@ -118,21 +118,13 @@ class PolicyModel(nn.Module):
         self.macroEngine = macroEngine
 
     def forward(self,x):
-        out = self.macroEngine.GMoment(x[:,2].view((x.size(0),1)),self.Q)
+        K = x[:,2:3]
+        out = self.macroEngine.GMoment(K,self.Q)
         out = out.expand(x.size(0),1)   
         Input = torch.cat((x,out),1)
-        out = self.pol(Input) 
+        out = self.pol(Input)[:,0] 
         return out
     
-    def forwardIndex(self,x,index):
-        # This time we only compute gradient for the computation of the policy of agent index 
-        out = self.macroEngine.GMoment(x[:,2].view((x.size(0),1)),self.Q)
-        out = out.expand(x.size(0),1) 
-        Input = torch.cat((x,out),1)
-        with torch.no_grad():
-            out = self.pol(Input) 
-        out[index,:] = self.pol(Input[index,:])
-        return out
 
 class StatDataset(Dataset):
     def __init__(self,X):
