@@ -21,8 +21,10 @@ other macroeconomic model as it only requires three functions :
 Utility U(x) 
 stateForward(policy, economy) which computes the economy's next state given current state and policy function
 GMoment( economy, basis) which computes and assembles the generalized moment (here done by averaging the generalized moments as in the paper
-but it could be build different). 
+but it could be built differently). 
 
-One can create another model with these same functions and the DeepHam method will be computable using the same code !
+One can create another model with these same functions and the DeepHam method will be computable using the same code.
 
 To run the project, simply run rep.py ! 
+
+To anyone who is trying the code, it is still work in progress :) 
